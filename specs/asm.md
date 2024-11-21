@@ -2,118 +2,146 @@
 
 The following document indicates recommended syntax for assembly
 
-## Operand Syntax
+## Part A - Basic instructions, Syntax
 
-#### Explicit size control
+### General Syntax
 
-Any operand may be prefixed by an explicit size control keyword "byte" for 1 byte values,
-"half" for 2 byte values, "single" or "word" for 4 byte values, "double" for 8 byte values, and "vector" for 16 byte values.
-Additionally, for short immediate (12-bit immediate) operand, the `short` or `simm` keyword can be used. 
-This only applies to immediate operands that are not memory references.
+The following abnf describes the general syntax of the assembly. Lexical nonterminals are specified in all capital letters. Syntactic non-terminals are specified in all lowercase letters. 
+In Syntactic Non-terminals, each element (terminal or non-terminal) may be separated by any amount of whitespace other than newline or carriage return:
+```abnf
+LABEL-START := %x41-5A / %x61-7A / "_" / "." / "$" / "@"
 
-### Register Operands
+LABEL-PART := <LABEL-START> / %x30-39
 
-Register operands should be encoded as the name of the register (e.g. `r0`)
+LABEL := <LABEL-START> [*<LABEL-PART>]
 
-To use smaller sizes, use register suffixes, `b` for byte, `h` for half word, and `s` for single word (e.g. `r0b`, `r0h`, or `r0s`). Alternatively, use the general size controls `byte`, `half`, `single`, and `double`.
-[Note: A word here is 32-bits. The choice was made so that suffixes could be consistent with floating-point registers]
+comment := ("#" / ";" / "//") [*<NOT-NEWLINE>]
 
-For Vector register operands, place the `b`, or `s` suffix in place of `l` or `h`. Additionally, to use a vector register with a 64-bit width, use the `d` (double) suffix. Note that because `v`*n*`h` refers to the higher half of the vector registers, the `half` size control must be used instead of the `h` suffix to use a vector register (`half v0`). 
+NEWLINE := [<comment>] [%xD] %xA
 
-### Indirect Register Operands
+MNEMONIC := (%x41-5A / %x61-7A / "_") [*(%x41-5A / %x61-7A / %x30-39 / "_")]
 
-Indirect Register operands should be encoded as the name of the register, plus the scaled displacement or index register name, placed inside square brackets. 
+VARIANT := ([*%x30-39] <MNEMONIC>) / (["-"] *%x30-39)
 
-Explicit size control operations
+OPCODE-NAME := <MNEMONIC> ["." <VARIANT>]
 
-Examples: `[r0]`, `[r0+r1]`, `[r7+16*r2]`.
+size-specifier := "byte" / "short" / "half" / "single" / "double" / "quad"
 
-### Immediate Operands
+REGISTER-NAME := (%x41-5A / %x61-7A) [*(%x41-5A / %x61-7A / %x30-39)] # Note: See Appendix C for a full list
 
-Immediate Operands (other than memory references) are indicated by literal integer values. 
-Additionally, when the name of a symbol (not defined by the assembler as a literal constant) is used, it may be prefixed by the `value` prefix to be used as an immediate value.
+HEX-DIGIT := %x30-39 / %x41-46 / %x61-66
 
-To indicate an `ip` relative value, add the immediate to the register name `ip`. `ip` may preceed or trail the constant value, e.g. `5+ip` or `ip+5`. Negative values may be used: e.g. `-5+ip` or `ip-5`. 
+DEC-LITERAL := *(%x30-39) ["d"]
 
+HEX-LITERAL := ("0x" *<HEX-DIGIT>) / (%x30-39 [*<HEX-DIGIT>] "h")
 
-When encoding an immediate operand without an explicit size control keyword, the smallest immediate size that encodes the value should be used. When symbol values are used, 8 byte encodes must be used by the assembler unless it can resolve the reference, but the assembler may emit link relaxations for smaller immediate encodings
-Negative values are encoded using 8 bytes for non-`ip` relative immediates, for any instruction other than `movsx` (opcode 0x020).
+OCT-LITERAL := ("0o" *(%x30-37)) / (*(%x30-37) "o")
 
+BIN-LITERAL := ("0b" *(%x30-31)) / (*(%x30-31) "b")
 
-If an explicit size control is used, then the constant must be encoded using that control. The `byte` control is illegal for immediates. 
-The assembler should check that the value is within range for an unsigned (non-relative positive immediate) or signed (relative, negative immediate, or immediate operand of `movsx`) value of that size.
+int-literal := ["-"] (<DEC-LITERAL> / <HEX-LITERAL> / <OCT-LITERAL> / <BIN-LITERAL>)
 
+immediate-value := <int-literal> / <label> [("+"/"-") <int-literal>]
 
+immediate-operand := (<immediate-value> ["+" "ip"]) / "rel" <immediate-value>
 
-### Memory References
+memory-address-base := <REGISTER-NAME> / <immediate-operand> / "abs" <immediate-value>
+memory-address-offset := ([<DEC-LITERAL> "*"] <register-name>) / (<register-name> ["*" <DEC-LITERAL>])
+memory-address := <memory-address-base> 
+    / (<memory-address-offset> / <memory-address-base>) "+" <register-name> 
+    / <register-name> "+" (<memory-address-base>/<memory-address-offset>)
 
-Memory References are encoded by an immediate value enclosed in square brackets, or a symbol name (optionally enclosed in square brackets) without the `value` prefix, optionally added to `ip`. 
+memory-reference := "[" [<size-specifier>] <memory-address>"]"
 
-Any size prefix other than `short` may be applied before the symbol name (if no square brackets are used) or outside the square brackets to control the operand size. Additionally, a size prefix other than `byte` or `short` may be applied before any value within the square brackets to indicate the memory reference size.
+base-operand := <register-name> / <immediate-operand> / <memory-reference>
 
-If no size prefix for the operand size is used, the size of the other operand is used if it exists, otherwise the assembler should refuse to assemble the program. If no size prefix for the address is used, the memory reference should be encoded the same as for immediate operands.
+operand := <size-specifier> [<base-operand>] / <base-operand>
 
-### Symbol Relocations
+instruction := [*(<label>":")] <opcode-name> [<operand> [*("," <operand>)]]
 
-An explicit relocation may be indicated using the `@` suffix, followed by the name of the relocation given by the psABI, without the `R_CLEVER_` prefix. 
-If no explicit relocation is used, the relocation for the explicit size should be used, with PCREL relocations used when immediates or memory references are encoded with the `ip` prefix. 
+directive-name := "." (%x41-5A / %x61-7A / "_" / ".") [*(%x41-5A / %x61-7A / %x30-39 / "_" / ".")]
 
-When no explicit size or relocation is used, the assembler may emit linker relaxations for the operand, in addition to emitting relocations.
+directive-line := <directive-name> [*<NOT-NEWLINE>]
 
-### Operand Order
+program-line := [<instruction> / <label> ":" / <directive-line>] <newline>
 
-Operands should be given in the order they are emitted.
+program := *<program-line>
 
-e.g. for `mov cr0, 0x1000`, first the operand for `cr0` should be generated, then the operand for `0x1000`. 
+```
 
-## Instruction Mnemonics
+`NOT-NEWLINE` means any valid character other than `%x0A` or `%x0D`. 
 
-Base instruction mnemonics are the ones given in the instruction overviews.
-When more than one instruction is given the same mnemonic, then when encoding such an instruction, the instruction with the lowest numbered opcode eligible for the number of operands given, except that GPR Specializations should be considered before considering non-specialized instructions, and instructions with GPR destinations should be considered before instructions with GPR sources.
+The `LABEL-PART` and `LABEL-START` lexical non-terminals may be modified when using Unicode XID support defined in Part D.
 
-Examples:
-- `mov cr0, 0x1000` Should be encoded with opcode 0x008
-- `mov r0, 0x1000` should be encoded with opcode 0x00A
-- `mov cr0, r1` should be encoded with opcode 0x00B
-- `mov r0, r1` should be encoded with opcode 0x00A
+### Labels
 
-The branch mnemonics, the `repbi` prefix, and the `cmov` and `cmovt` mnemonics should be indicated as with the prefix (`j` for branching, `repb` for `repbi`,`cmovt` for `cmovt`, and `cmov` for `cmov`), followed by the lowercase one or two character condition name.
+A label may preceed any instruction, followed by a `:`. 
+A label matches the following regex `[A-Za-z_.$@][A-Za-z0-9_.$@]*`.
 
-Examples:
-- `repbe` is a repbi prefix with a condition code of 4 (Zero).
-- `cmovtae` is a cmovt instruction with a condition code of 0xE (No Carry)
+Labels starting with a decimal number are reserved - their support is documented in Part D - Recommended Syntax Extensions for Inline Assembly in Systems Languages. Additionally, support for Unicode XID is documented there.
 
 
-For single bit h flags, such as `l`, `f`, or `w`, these should be indicated by the presence of the character after a `.` following the mnemonic.
+### Mnemonics
 
-Example: `add.l` sets the `l` bit in `h`, while `add` does not.
+Each instruction is assigned a mnemonic based on the name in the specification. The full list of instructions in the version is listed in Appendix A.
 
-For branch weight hints, the keywords `likely` or `l`, and `unlikely` or `u` can be used to indicate a branch weight of `7`, or `-8` respectively. Additionally, an explicit integer between -8 and 7 inclusive may be given. Both suffixes follow a `.`.
+### Instruction Variants
 
-Example: `jeq.l` encodes a branch weight of `7`, and `jne.-6` encodes a branch weight of -6
+Instructions that vary in the `h` field will typically include this variation as a suffix separated  by a `.`. 
 
-For the vec prefix, the element size value in bits should be used following the `.` suffix. A size name may be used instead of a numeric value (`short` is not accepted)
-Examples: `vec.8`, `vec.16`, etc.
+The style depends on the exact field. For a single bit, this is typically the name of the bit. 
 
-## Condition Codes
+The following suffixes are defined as follows:
+* Registers - not specified as a suffix
+    * For GPR Specializations, the register in the appropriate operand position with no size specifier
+    * For other instructions, the register name placed in the first operand position.
+* Size Control: The explicit name of the size control. There is no default. 
+    * If present on an instruction with 0 operands that is not a prefix, written in the operand position instead of as a suffix.
+* `f`, `l` , `w` (for `mul`/`imul`): The letter being present sets the bit and absent clears it.
+* `w` (in shift instructions): The letter `w` indicates the bit being set, and the letter `s` indicates the bit being clear.
+* Condition Code: Condition Code Suffix immediately following the mnemonic (no `.` in the suffix)
+* `u`: The letter `u` indicates the bit being set, and the letter `s` indicates the bit being cleared.
+* `i`: The letter `i` being present indicates the bit being set, and the letter `i` being absent indicates the bit being clear.
+* `ss` (in `movfx` and `movxf`) is written as the `1<<ss`. 
+* `w` (in conditional branches): The signed 4-bit integer value of the branch weight
 
-The condition codes for conditional branches, and the repcc instruction are as follows, including Aliases:
+All supported variants are listed in Appendix B.
 
-| Canonical Condition Name | Canonical Mnemonic | Alternative Mnemonics |
-|--------------------------|--------------------|-----------------------|
-| Parity | p  | po (Parity Odd) |
-| Carry  | c  | b (Below) |
-| Overflow|v  | | 
-| Zero   | z  | e, eq (Equal) | 
-| Less Than| lt | | 
-| Less or Eq | le | |
-| Below or Eq | be | |
-| Minus | mi | sn (Sign Negative) |
-| Plus  | pl | sp (Sign Positive) |
-| Above | a  | |
-| Greater | gt | |
-| Greater or Equal | ge | |
-| Not Zero | nz | ne (Not Equal) |
-| No Overflow | nv |  |
-| No Carry  | nc | ae (Above or Equal) |
-| No parity | np | pe (Parity Even) |
+### Operand Syntax
+
+#### Size Specifier
+
+Immediately to any operand, or before the address of a memory reference, a size specifier may appear. The specifier is one of the following:
+* `byte` (size 1)
+* `short` (12 bits)
+* `half` (size 2)
+* `single` (size 4)
+* `double` (size 8)
+* `quad` (size 16)
+
+`quad` may only appear on a vector register or an immediate/memory operand.
+`short` may only appear on an immediate operand.
+
+Omitting a size specifier, except on a register operand, yields an unspecified but valid width. 
+When applied to an immediate operand or a memory address, the width is sufficient to encode the value of the operand.
+
+When omitted on a vector register pair, `quad` size is inferred.  
+When omitted on a general purpose register for an instruction that supports GPR specialization for that operand:
+* If the operand is the only operand, `double` is inferred,
+* If there is another operand, the same operand size is inferred.
+
+In all other cases, the width is unspecified but valid for the instruction and register type.
+
+#### Register Operands
+
+A Register operand is specified by the name of the register specified in the specification. Any alias name is accepted.
+Full List of valid register names (excluding regno names) is specified in Appendix C.
+In addition, a register can be specified as `r{num}` where `{num}` is the register number. 
+This syntax cannot be used to refer to a vector pair register.
+
+A vector register operand can be written as `v{num}` where `{num}` is the vector pair number. The vector pair `v{num}` refers to the pair of `v{num}l` and `v{num}h`.
+
+#### Immediate Operands
+
+An immediate operand may be written as one of the following forms:
+* An integer literal, written in decimal, hexadecimal, octal, or binary
